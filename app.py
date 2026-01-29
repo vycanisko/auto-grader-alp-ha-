@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 from PIL import Image
-import pytesseract
+import easyocr
 
 st.set_page_config(page_title="사진 단어시험 자동채점기", layout="centered")
 
@@ -13,12 +13,12 @@ TEMPLATES_FILE = os.path.join(DATA_DIR, "templates.json")
 ANSWERS_FILE = os.path.join(DATA_DIR, "answers.json")
 
 if not os.path.exists(TEMPLATES_FILE):
-    with open(TEMPLATES_FILE, "w") as f:
-        json.dump({}, f)
+    with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f, ensure_ascii=False)
 
 if not os.path.exists(ANSWERS_FILE):
-    with open(ANSWERS_FILE, "w") as f:
-        json.dump({}, f)
+    with open(ANSWERS_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f, ensure_ascii=False)
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -27,6 +27,17 @@ def load_json(path):
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(['ko','en'])
+
+reader = load_reader()
+
+def ocr_image(img):
+    results = reader.readtext(img)
+    text = "\n".join([r[1] for r in results])
+    return text
 
 def normalize(text):
     if not text:
@@ -57,16 +68,16 @@ tab1, tab2, tab3 = st.tabs(["1️⃣ 시험지 등록", "2️⃣ 답지 등록",
 with tab1:
     st.subheader("시험지 양식 등록")
     test_name = st.text_input("시험 이름 (예: 1월 29일 단어시험)")
-    template_img = st.file_uploader("빈 시험지 사진 업로드", type=["jpg", "png", "jpeg"])
+    template_imgs = st.file_uploader("빈 시험지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
     if st.button("시험지 저장"):
-        if not test_name or not template_img:
-            st.error("시험 이름과 시험지 사진을 모두 입력하세요.")
+        if not test_name or not template_imgs:
+            st.error("시험 이름과 시험지 이미지를 모두 입력하세요.")
         else:
             templates = load_json(TEMPLATES_FILE)
-            templates[test_name] = {"template_image": template_img.name}
+            templates[test_name] = [img.name for img in template_imgs]
             save_json(TEMPLATES_FILE, templates)
-            st.success("시험지가 저장되었습니다! (현재는 구조 저장 단계만 구현됨)")
+            st.success("시험지가 저장되었습니다!")
 
 # -----------------------
 # 2. 답지 등록
@@ -74,28 +85,38 @@ with tab1:
 with tab2:
     st.subheader("답지 등록")
     answers_test_name = st.text_input("연결할 시험 이름")
-    answer_img = st.file_uploader("답지 사진 업로드", type=["jpg", "png", "jpeg"])
+    answer_imgs = st.file_uploader("답지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
     if st.button("답지 저장"):
-        if not answers_test_name or not answer_img:
-            st.error("시험 이름과 답지 사진을 모두 입력하세요.")
+        if not answers_test_name or not answer_imgs:
+            st.error("시험 이름과 답지 이미지를 모두 입력하세요.")
         else:
-            img = Image.open(answer_img)
-            text = pytesseract.image_to_string(img, lang="kor+eng")
-
-            lines = text.split("\n")
             answers = {}
-            for line in lines:
-                if "." in line:
-                    try:
-                        num, rest = line.split(".", 1)
-                        num = num.strip()
-                        meaning = rest.strip()
-                        if num.isdigit():
-                            meanings = [m.strip() for m in meaning.replace("(", "").replace(")", "").split(",")]
-                            answers[num] = meanings
-                    except:
-                        pass
+            for img_file in answer_imgs:
+                img = Image.open(img_file)
+                text = ocr_image(img)
+                lines = text.split("\n")
+
+                for line in lines:
+                    if "." in line:
+                        try:
+                            num, rest = line.split(".", 1)
+                            num = num.strip()
+                            meaning = rest.strip()
+                            if num.isdigit():
+                                meanings = (
+                                    meaning.replace("(", "")
+                                    .replace(")", "")
+                                    .replace("·", ",")
+                                    .split(",")
+                                )
+                                meanings = [m.strip() for m in meanings if m.strip()]
+                                if num in answers:
+                                    answers[num].extend(meanings)
+                                else:
+                                    answers[num] = meanings
+                        except:
+                            pass
 
             all_answers = load_json(ANSWERS_FILE)
             all_answers[answers_test_name] = answers
@@ -111,27 +132,28 @@ with tab3:
     tests = load_json(ANSWERS_FILE)
     if tests:
         selected_test = st.selectbox("시험 선택", list(tests.keys()))
-        student_img = st.file_uploader("학생 시험지 사진 업로드", type=["jpg", "png", "jpeg"])
+        student_imgs = st.file_uploader("학생 시험지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
         if st.button("채점하기"):
-            if not student_img:
-                st.error("학생 시험지 사진을 업로드하세요.")
+            if not student_imgs:
+                st.error("학생 시험지 이미지를 업로드하세요.")
             else:
-                img = Image.open(student_img)
-                text = pytesseract.image_to_string(img, lang="kor+eng")
-                lines = text.split("\n")
-
                 student_answers = {}
-                for line in lines:
-                    if "." in line:
-                        try:
-                            num, rest = line.split(".", 1)
-                            num = num.strip()
-                            answer = rest.strip()
-                            if num.isdigit():
-                                student_answers[num] = answer
-                        except:
-                            pass
+                for img_file in student_imgs:
+                    img = Image.open(img_file)
+                    text = ocr_image(img)
+                    lines = text.split("\n")
+
+                    for line in lines:
+                        if "." in line:
+                            try:
+                                num, rest = line.split(".", 1)
+                                num = num.strip()
+                                answer = rest.strip()
+                                if num.isdigit():
+                                    student_answers[num] = answer
+                            except:
+                                pass
 
                 correct = 0
                 wrong = []
