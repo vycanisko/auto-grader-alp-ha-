@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>단어시험 자동 채점기</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; }
+    h2 { margin-top: 30px; }
+    textarea { width: 100%; height: 140px; }
+    button { padding: 10px 14px; margin-top: 10px; }
+    .box { border: 1px solid #ccc; padding: 12px; margin-bottom: 20px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>📸 단어시험 자동 채점기</h1>
+
+  <div class="box">
+    <h2>1️⃣ 답지 등록</h2>
+    <input type="text" id="testName" placeholder="시험 이름" />
+    <br /><br />
+    <input type="file" id="answerImages" multiple accept="image/*" />
+    <br />
+    <button onclick="processAnswer()">답지 OCR</button>
+    <textarea id="answerText" placeholder="OCR 결과 (수정 가능)"></textarea>
+    <button onclick="saveAnswer()">답지 저장</button>
+  </div>
+
+  <div class="box">
+    <h2>2️⃣ 학생 답안 채점</h2>
+    <select id="testSelect"></select>
+    <br /><br />
+    <input type="file" id="studentImages" multiple accept="image/*" />
+    <br />
+    <button onclick="processStudent()">학생 OCR</button>
+    <textarea id="studentText" placeholder="OCR 결과 (수정 가능)"></textarea>
+    <button onclick="grade()">채점하기</button>
+    <h3 id="result"></h3>
+  </div>
+
+<script>
+function loadTests() {
+  const data = JSON.parse(localStorage.getItem("tests") || "{}");
+  const select = document.getElementById("testSelect");
+  select.innerHTML = "";
+  for (const name in data) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  }
+}
+
+async function runOCR(files) {
+  let result = "";
+  for (const file of files) {
+    const { data: { text } } = await Tesseract.recognize(file, "kor+eng");
+    result += text + "\n";
+  }
+  return result;
+}
+
+async function processAnswer() {
+  const files = document.getElementById("answerImages").files;
+  if (!files.length) return alert("답지 이미지 선택해");
+  document.getElementById("answerText").value = "OCR 중...";
+  const text = await runOCR(files);
+  document.getElementById("answerText").value = text;
+}
+
+async function processStudent() {
+  const files = document.getElementById("studentImages").files;
+  if (!files.length) return alert("학생 시험지 선택해");
+  document.getElementById("studentText").value = "OCR 중...";
+  const text = await runOCR(files);
+  document.getElementById("studentText").value = text;
+}
+
+function parse(text) {
+  const lines = text.split("\n");
+  const obj = {};
+  for (const line of lines) {
+    const m = line.match(/^(\d+)[\.\)]\s*(.+)$/);
+    if (m) obj[m[1]] = m[2];
+  }
+  return obj;
+}
+
+function normalize(s) {
+  return s.replace(/\s/g,"").replace(/[.,/]/g,"").toLowerCase();
+}
+
+function saveAnswer() {
+  const name = document.getElementById("testName").value.trim();
+  if (!name) return alert("시험 이름 입력");
+  const text = document.getElementById("answerText").value;
+  const data = JSON.parse(localStorage.getItem("tests") || "{}");
+  data[name] = parse(text);
+  localStorage.setItem("tests", JSON.stringify(data));
+  loadTests();
+  alert("답지 저장 완료");
+}
+
+function grade() {
+  const data = JSON.parse(localStorage.getItem("tests") || "{}");
+  const test = document.getElementById("testSelect").value;
+  const answers = data[test];
+  const student = parse(document.getElementById("studentText").value);
+
+  let correct = 0;
+  const wrong = [];
+  const total = Object.keys(answers).length;
+
+  for (const num in answers) {
+    if (student[num] && normalize(student[num]).includes(normalize(answers[num]))) {
+      correct++;
+    } else {
+      wrong.push(num);
+    }
+  }
+
+  document.getElementById("result").innerText =
+    `점수: ${correct} / ${total}\n틀린 번호: ${wrong.join(", ")}`;
+}
+
+loadTests();
+</script>
+</body>
+</html>
