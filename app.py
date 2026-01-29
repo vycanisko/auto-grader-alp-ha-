@@ -1,43 +1,24 @@
 import streamlit as st
 import json
 import os
-from PIL import Image
-import easyocr
 
 st.set_page_config(page_title="사진 단어시험 자동채점기", layout="centered")
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
-
-TEMPLATES_FILE = os.path.join(DATA_DIR, "templates.json")
 ANSWERS_FILE = os.path.join(DATA_DIR, "answers.json")
-
-if not os.path.exists(TEMPLATES_FILE):
-    with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
-        json.dump({}, f, ensure_ascii=False)
 
 if not os.path.exists(ANSWERS_FILE):
     with open(ANSWERS_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f, ensure_ascii=False)
 
-def load_json(path):
-    with open(path, "r", encoding="utf-8") as f:
+def load_json():
+    with open(ANSWERS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
+def save_json(data):
+    with open(ANSWERS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['ko','en'])
-
-reader = load_reader()
-
-def ocr_image(img):
-    results = reader.readtext(img)
-    text = "\n".join([r[1] for r in results])
-    return text
 
 def normalize(text):
     if not text:
@@ -58,102 +39,137 @@ def is_correct(student, answers):
             return True
     return False
 
-st.title("📸 단어시험 사진 자동채점기")
+st.title("📸 단어시험 자동채점기")
 
-tab1, tab2, tab3 = st.tabs(["1️⃣ 시험지 등록", "2️⃣ 답지 등록", "3️⃣ 학생 답안 채점"])
+tab1, tab2 = st.tabs(["1️⃣ 답지 등록", "2️⃣ 학생 답안 채점"])
 
-# -----------------------
-# 1. 시험지 등록
-# -----------------------
+# -------------------------
+# 1. 답지 등록
+# -------------------------
 with tab1:
-    st.subheader("시험지 양식 등록")
-    test_name = st.text_input("시험 이름 (예: 1월 29일 단어시험)")
-    template_imgs = st.file_uploader("빈 시험지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
-
-    if st.button("시험지 저장"):
-        if not test_name or not template_imgs:
-            st.error("시험 이름과 시험지 이미지를 모두 입력하세요.")
-        else:
-            templates = load_json(TEMPLATES_FILE)
-            templates[test_name] = [img.name for img in template_imgs]
-            save_json(TEMPLATES_FILE, templates)
-            st.success("시험지가 저장되었습니다!")
-
-# -----------------------
-# 2. 답지 등록
-# -----------------------
-with tab2:
     st.subheader("답지 등록")
-    answers_test_name = st.text_input("연결할 시험 이름")
-    answer_imgs = st.file_uploader("답지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+    test_name = st.text_input("시험 이름")
+    answer_imgs = st.file_uploader(
+        "답지 이미지 업로드 (여러 장 가능)",
+        type=["jpg", "png", "jpeg"],
+        accept_multiple_files=True
+    )
+
+    ocr_answers = ""
+
+    if answer_imgs:
+        st.markdown("#### 🔍 OCR 결과 (자동 추출)")
+        for img in answer_imgs:
+            st.image(img, width=200)
+            st.components.v1.html(
+                f"""
+                <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+                <script>
+                const img = document.querySelector("img:last-of-type");
+                Tesseract.recognize(img.src, "kor+eng").then(result => {{
+                    const text = result.data.text;
+                    const textarea = parent.document.querySelector("textarea");
+                    if (textarea) {{
+                        textarea.value += "\\n" + text;
+                    }}
+                });
+                </script>
+                """,
+                height=0,
+            )
+
+        ocr_answers = st.text_area(
+            "OCR 결과 (자동 채워짐, 필요하면 수정 가능)",
+            height=200,
+            key="answer_text"
+        )
 
     if st.button("답지 저장"):
-        if not answers_test_name or not answer_imgs:
-            st.error("시험 이름과 답지 이미지를 모두 입력하세요.")
+        if not test_name or not ocr_answers.strip():
+            st.error("시험 이름과 OCR 결과가 필요합니다.")
         else:
             answers = {}
-            for img_file in answer_imgs:
-                img = Image.open(img_file)
-                text = ocr_image(img)
-                lines = text.split("\n")
+            for line in ocr_answers.split("\n"):
+                if "." in line:
+                    try:
+                        num, rest = line.split(".", 1)
+                        num = num.strip()
+                        meaning = rest.strip()
+                        if num.isdigit():
+                            meanings = (
+                                meaning.replace("(", "")
+                                .replace(")", "")
+                                .replace("·", ",")
+                                .split(",")
+                            )
+                            meanings = [m.strip() for m in meanings if m.strip()]
+                            answers[num] = meanings
+                    except:
+                        pass
 
-                for line in lines:
+            all_answers = load_json()
+            all_answers[test_name] = answers
+            save_json(all_answers)
+            st.success("답지가 저장되었습니다!")
+
+# -------------------------
+# 2. 학생 답안 채점
+# -------------------------
+with tab2:
+    st.subheader("학생 답안 채점")
+    tests = load_json()
+    if tests:
+        selected_test = st.selectbox("시험 선택", list(tests.keys()))
+        student_imgs = st.file_uploader(
+            "학생 시험지 이미지 업로드 (여러 장 가능)",
+            type=["jpg", "png", "jpeg"],
+            accept_multiple_files=True
+        )
+
+        ocr_student = ""
+
+        if student_imgs:
+            st.markdown("#### 🔍 OCR 결과 (자동 추출)")
+            for img in student_imgs:
+                st.image(img, width=200)
+                st.components.v1.html(
+                    f"""
+                    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+                    <script>
+                    const img = document.querySelector("img:last-of-type");
+                    Tesseract.recognize(img.src, "kor+eng").then(result => {{
+                        const text = result.data.text;
+                        const textarea = parent.document.querySelectorAll("textarea")[1];
+                        if (textarea) {{
+                            textarea.value += "\\n" + text;
+                        }}
+                    });
+                    </script>
+                    """,
+                    height=0,
+                )
+
+        student_text = st.text_area(
+            "OCR 결과 (자동 채워짐, 필요하면 수정 가능)",
+            height=200,
+            key="student_text"
+        )
+
+        if st.button("채점하기"):
+            if not student_text.strip():
+                st.error("학생 OCR 결과가 필요합니다.")
+            else:
+                student_answers = {}
+                for line in student_text.split("\n"):
                     if "." in line:
                         try:
                             num, rest = line.split(".", 1)
                             num = num.strip()
-                            meaning = rest.strip()
+                            answer = rest.strip()
                             if num.isdigit():
-                                meanings = (
-                                    meaning.replace("(", "")
-                                    .replace(")", "")
-                                    .replace("·", ",")
-                                    .split(",")
-                                )
-                                meanings = [m.strip() for m in meanings if m.strip()]
-                                if num in answers:
-                                    answers[num].extend(meanings)
-                                else:
-                                    answers[num] = meanings
+                                student_answers[num] = answer
                         except:
                             pass
-
-            all_answers = load_json(ANSWERS_FILE)
-            all_answers[answers_test_name] = answers
-            save_json(ANSWERS_FILE, all_answers)
-
-            st.success("답지가 저장되었습니다!")
-
-# -----------------------
-# 3. 학생 답안 채점
-# -----------------------
-with tab3:
-    st.subheader("학생 답안 채점")
-    tests = load_json(ANSWERS_FILE)
-    if tests:
-        selected_test = st.selectbox("시험 선택", list(tests.keys()))
-        student_imgs = st.file_uploader("학생 시험지 이미지 업로드 (여러 장 가능)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
-
-        if st.button("채점하기"):
-            if not student_imgs:
-                st.error("학생 시험지 이미지를 업로드하세요.")
-            else:
-                student_answers = {}
-                for img_file in student_imgs:
-                    img = Image.open(img_file)
-                    text = ocr_image(img)
-                    lines = text.split("\n")
-
-                    for line in lines:
-                        if "." in line:
-                            try:
-                                num, rest = line.split(".", 1)
-                                num = num.strip()
-                                answer = rest.strip()
-                                if num.isdigit():
-                                    student_answers[num] = answer
-                            except:
-                                pass
 
                 correct = 0
                 wrong = []
